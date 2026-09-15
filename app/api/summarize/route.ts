@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { parseOffice } from "officeparser";
 import { GoogleGenAI } from "@google/genai";
 import { get } from "@vercel/blob";
+import { generateContentWithRetry, toFriendlyGeminiErrorMessage } from "@/lib/geminiRetry";
 
 export const maxDuration = 120; // 2 minutes for processing large documents
 
@@ -229,7 +230,7 @@ export async function POST(req: NextRequest) {
 
     // 15000자 이하: 한 번에 요약
     if (textLength <= 15000) {
-      const response = await ai.models.generateContent({
+      const response = await generateContentWithRetry(ai, {
         model: MODEL_NAME,
         contents: `[강의자료 본문 (페이지 번호 태그 포함)]\n${trimmedText}`,
         config: {
@@ -255,7 +256,7 @@ export async function POST(req: NextRequest) {
 [강의자료 청크 내용]
 ${chunk}`;
 
-        const mapResponse = await ai.models.generateContent({
+        const mapResponse = await generateContentWithRetry(ai, {
           model: MODEL_NAME,
           contents: mapPrompt,
         });
@@ -273,7 +274,7 @@ ${combinedMapText}
 
 위 파트별 내용들을 슬라이드 순서대로 유기적으로 통합하여, 요구된 시험 대비 요약 양식(전체 요약 문단, ### N. 소제목 (p.06), 불릿 및 마크다운 표, A → B 관계, > 블록쿼트 정의, 문장별 p.XX 페이지 번호 명시, 섹션별 쉬운 설명)에 맞춰 완벽한 최종 시험 대비 요약본을 작성해 주세요.`;
 
-      const reduceResponse = await ai.models.generateContent({
+      const reduceResponse = await generateContentWithRetry(ai, {
         model: MODEL_NAME,
         contents: reducePrompt,
         config: {
@@ -293,8 +294,7 @@ ${combinedMapText}
     });
   } catch (error: unknown) {
     console.error("API error during summarization:", error);
-    const message =
-      error instanceof Error ? error.message : "요약 처리 중 알 수 없는 오류가 발생했습니다.";
+    const message = toFriendlyGeminiErrorMessage(error);
     return NextResponse.json(
       { error: `요약 생성 실패: ${message}` },
       { status: 500 }

@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { GoogleGenAI } from "@google/genai";
+import { generateContentWithRetry, toFriendlyGeminiErrorMessage } from "@/lib/geminiRetry";
 
 export const maxDuration = 120;
 
@@ -117,7 +118,7 @@ ${text.slice(0, 30000)}`
 ${text.slice(0, 30000)}`;
 
     const ai = new GoogleGenAI({ apiKey });
-    const response = await ai.models.generateContent({
+    const response = await generateContentWithRetry(ai, {
       model: MODEL_NAME,
       contents: prompt,
       config: {
@@ -146,8 +147,7 @@ ${text.slice(0, 30000)}`;
     return NextResponse.json(quizData);
   } catch (error: unknown) {
     console.error("Quiz generation error:", error);
-    const message =
-      error instanceof Error ? error.message : "알 수 없는 오류가 발생했습니다.";
+    const message = toFriendlyGeminiErrorMessage(error);
     return NextResponse.json(
       { error: `퀴즈 생성 실패: ${message}` },
       { status: 500 }
