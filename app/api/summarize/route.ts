@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { parseOffice } from "officeparser";
 import { GoogleGenAI } from "@google/genai";
+import { get } from "@vercel/blob";
 
 export const maxDuration = 120; // 2 minutes for processing large documents
 
@@ -146,18 +147,20 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    const formData = await req.formData();
-    const file = formData.get("file") as File | null;
+    const { fileUrl, fileName: rawFileName } = (await req.json()) as {
+      fileUrl?: string;
+      fileName?: string;
+    };
 
-    if (!file) {
+    if (!fileUrl || !rawFileName) {
       return NextResponse.json(
-        { error: "업로드된 파일이 없습니다." },
+        { error: "업로드된 파일 정보가 없습니다." },
         { status: 400 }
       );
     }
 
     // 파일 확장자 검사
-    const fileName = file.name || "";
+    const fileName = rawFileName;
     const ext = fileName.split(".").pop()?.toLowerCase() || "";
     const allowedExtensions = ["pptx", "pdf", "docx"];
 
@@ -170,8 +173,15 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    // 파일 버퍼 추출
-    const arrayBuffer = await file.arrayBuffer();
+    // Vercel Blob에서 파일 다운로드 (대용량 파일도 서버리스 함수 요청 본문 제한 없이 처리)
+    const blobResult = await get(fileUrl, { access: "private" });
+    if (!blobResult || !blobResult.stream) {
+      return NextResponse.json(
+        { error: "업로드된 파일을 찾을 수 없습니다." },
+        { status: 404 }
+      );
+    }
+    const arrayBuffer = await new Response(blobResult.stream).arrayBuffer();
     const buffer = Buffer.from(arrayBuffer);
 
     if (buffer.length === 0) {

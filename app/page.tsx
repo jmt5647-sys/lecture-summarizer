@@ -3,6 +3,7 @@
 import React, { useState, useRef, useEffect } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
+import { upload } from "@vercel/blob/client";
 import {
   FileText,
   Plus,
@@ -12,10 +13,11 @@ import {
   CheckCircle2,
   ArrowLeft,
   MoreVertical,
+  ChevronRight,
   Loader2,
   Sparkles,
   Folder,
-  Send,
+  FolderPlus,
   User,
   Sun,
   Moon,
@@ -44,6 +46,13 @@ export interface SavedDocument {
   summary: string;
   charCount: number;
   quiz?: QuizResponse | null;
+  folderId?: string | null;
+}
+
+export interface DocFolder {
+  id: string;
+  name: string;
+  createdAt: string;
 }
 
 export default function Home() {
@@ -51,6 +60,11 @@ export default function Home() {
   const [activeDocId, setActiveDocId] = useState<string | null>(null);
   const [view, setView] = useState<"library" | "viewer">("library");
   const [activeTab, setActiveTab] = useState<"summary" | "quiz">("summary");
+
+  // 과목별 폴더 상태
+  const [folders, setFolders] = useState<DocFolder[]>([]);
+  const [activeFolderId, setActiveFolderId] = useState<string | null>(null);
+  const [folderMenuOpenDocId, setFolderMenuOpenDocId] = useState<string | null>(null);
 
   // 업로드 모달 상태
   const [isUploadModalOpen, setIsUploadModalOpen] = useState<boolean>(false);
@@ -122,6 +136,21 @@ export default function Home() {
     }
   }, []);
 
+  // 로컬 스토리지에서 저장된 폴더(과목) 목록 불러오기
+  useEffect(() => {
+    try {
+      const saved = localStorage.getItem("saved_folders");
+      if (saved) {
+        const parsed = JSON.parse(saved);
+        if (Array.isArray(parsed)) {
+          setFolders(parsed);
+        }
+      }
+    } catch (e) {
+      console.error("Failed to load saved folders:", e);
+    }
+  }, []);
+
   // 문서 목록 변경 시 로컬 스토리지 저장
   const saveDocumentsToStorage = (newDocs: SavedDocument[]) => {
     setDocuments(newDocs);
@@ -132,7 +161,61 @@ export default function Home() {
     }
   };
 
+  // 폴더 목록 변경 시 로컬 스토리지 저장
+  const saveFoldersToStorage = (newFolders: DocFolder[]) => {
+    setFolders(newFolders);
+    try {
+      localStorage.setItem("saved_folders", JSON.stringify(newFolders));
+    } catch (e) {
+      console.error("Failed to save folders to storage:", e);
+    }
+  };
+
+  // 새 폴더(과목) 만들기
+  const handleCreateFolder = () => {
+    const name = window.prompt("새 폴더(과목) 이름을 입력하세요:");
+    if (!name || !name.trim()) return;
+    const newFolder: DocFolder = {
+      id: `folder_${Date.now()}`,
+      name: name.trim(),
+      createdAt: new Date().toISOString().slice(0, 10),
+    };
+    saveFoldersToStorage([...folders, newFolder]);
+    setActiveFolderId(newFolder.id);
+  };
+
+  // 폴더 삭제 (폴더에 속한 문서는 미분류로 이동)
+  const handleDeleteFolder = (folderId: string, e?: React.MouseEvent) => {
+    if (e) e.stopPropagation();
+    const folder = folders.find((f) => f.id === folderId);
+    if (!folder) return;
+    if (
+      !window.confirm(
+        `"${folder.name}" 폴더를 삭제하시겠습니까? 폴더 안의 문서는 삭제되지 않고 미분류로 이동합니다.`
+      )
+    )
+      return;
+
+    saveFoldersToStorage(folders.filter((f) => f.id !== folderId));
+    saveDocumentsToStorage(
+      documents.map((d) => (d.folderId === folderId ? { ...d, folderId: null } : d))
+    );
+    if (activeFolderId === folderId) setActiveFolderId(null);
+  };
+
+  // 문서를 특정 폴더로 이동 (null이면 미분류로 이동)
+  const handleMoveDocToFolder = (docId: string, folderId: string | null) => {
+    saveDocumentsToStorage(
+      documents.map((d) => (d.id === docId ? { ...d, folderId } : d))
+    );
+    setFolderMenuOpenDocId(null);
+    setMenuOpenDocId(null);
+  };
+
   const activeDoc = documents.find((d) => d.id === activeDocId) || null;
+  const visibleDocuments = activeFolderId
+    ? documents.filter((d) => d.folderId === activeFolderId)
+    : documents;
 
   // 뷰어 화면 진입 시 IndexedDB에서 원본 파일(+PDF 미리보기) 불러오기
   // PDF는 원본 자체를 렌더링하고, PPTX/DOCX는 업로드 시 서버에서 변환해 둔 PDF를 렌더링한다.
@@ -191,19 +274,25 @@ export default function Home() {
 
     setIsUploading(true);
     setUploadError(null);
-    setUploadStep("강의 슬라이드 및 텍스트 분석 중...");
-
-    const formData = new FormData();
-    formData.append("file", uploadFile);
+    setUploadStep("파일 업로드 중...");
 
     try {
+      // 대용량 파일도 서버리스 함수의 요청 본문 크기 제한 없이 처리할 수 있도록
+      // Vercel Blob 스토리지에 파일을 직접 업로드한 뒤, 그 URL만 API로 전달한다.
+      const blob = await upload(uploadFile.name, uploadFile, {
+        access: "private",
+        handleUploadUrl: "/api/blob-upload",
+      });
+
+      setUploadStep("강의 슬라이드 및 텍스트 분석 중...");
       const timer = setTimeout(() => {
         setUploadStep("Gemini 3.6 Flash가 시험 대비 요약본 생성 중...");
       }, 1500);
 
       const response = await fetch("/api/summarize", {
         method: "POST",
-        body: formData,
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ fileUrl: blob.url, fileName: uploadFile.name }),
       });
 
       clearTimeout(timer);
@@ -228,6 +317,7 @@ export default function Home() {
         createdAt: today,
         summary: data.summary,
         charCount: data.charCount,
+        folderId: activeFolderId,
       };
 
       const updatedDocs = [newDoc, ...documents];
@@ -244,11 +334,10 @@ export default function Home() {
       if (ext !== "pdf") {
         setUploadStep("PPTX/DOCX를 PDF 미리보기로 변환 중...");
         try {
-          const convertFormData = new FormData();
-          convertFormData.append("file", uploadFile);
           const convertRes = await fetch("/api/convert-pdf", {
             method: "POST",
-            body: convertFormData,
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ fileUrl: blob.url, fileName: uploadFile.name }),
           });
           if (convertRes.ok) {
             const pdfBlob = await convertRes.blob();
@@ -260,6 +349,13 @@ export default function Home() {
           console.error("PDF 변환 요청 실패:", e);
         }
       }
+
+      // 처리가 끝났으니 Blob 스토리지의 원본 사본은 정리 (실패해도 무시)
+      fetch("/api/blob-cleanup", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ fileUrl: blob.url }),
+      }).catch(() => {});
 
       // 모달 닫고 즉시 뷰어로 이동
       setIsUploading(false);
@@ -378,43 +474,19 @@ export default function Home() {
             <Plus className="w-4 h-4" />
           </button>
 
-          {/* Folder */}
+          {/* New Folder (과목별 폴더 만들기) */}
           <button
             type="button"
-            className="w-8 h-8 rounded-lg flex items-center justify-center text-slate-600 hover:text-slate-400 transition-colors"
-            title="폴더"
+            onClick={handleCreateFolder}
+            className="w-8 h-8 rounded-lg flex items-center justify-center text-slate-500 hover:text-slate-300 hover:bg-[#161823] transition-colors"
+            title="새 폴더(과목) 만들기"
           >
-            <Folder className="w-4 h-4" />
-          </button>
-
-          {/* AI / Sparkles */}
-          <button
-            type="button"
-            className="w-8 h-8 rounded-lg flex items-center justify-center text-slate-600 hover:text-slate-400 transition-colors"
-            title="AI 시험 준비"
-          >
-            <Sparkles className="w-4 h-4" />
+            <FolderPlus className="w-4 h-4" />
           </button>
         </div>
 
         {/* Bottom items */}
         <div className="flex flex-col items-center gap-4 w-full">
-          <button
-            type="button"
-            className="w-8 h-8 rounded-lg flex items-center justify-center text-slate-600 hover:text-slate-400 transition-colors"
-            title="휴지통"
-          >
-            <Trash2 className="w-4 h-4" />
-          </button>
-
-          <button
-            type="button"
-            className="w-8 h-8 rounded-lg flex items-center justify-center text-slate-600 hover:text-slate-400 transition-colors"
-            title="의견 보내기"
-          >
-            <Send className="w-4 h-4" />
-          </button>
-
           <div className="w-7 h-7 rounded-full bg-[#1b1e2a] border border-[#272c3d] flex items-center justify-center text-slate-400 mt-1">
             <User className="w-3.5 h-3.5" />
           </div>
@@ -429,13 +501,65 @@ export default function Home() {
              ======================================================== */
           <main className="p-8 max-w-7xl mx-auto w-full">
             {/* Page Header */}
-            <div className="flex items-center justify-between mb-8">
+            <div className="flex items-center justify-between mb-5">
               <h1 className="text-xl font-bold text-white tracking-tight">
                 문서
               </h1>
               <div className="text-xs text-slate-500">
-                총 {documents.length}개의 강의자료
+                총 {visibleDocuments.length}개의 강의자료
               </div>
+            </div>
+
+            {/* 과목별 폴더 칩 */}
+            <div className="flex items-center gap-2 mb-8 flex-wrap">
+              <button
+                type="button"
+                onClick={() => setActiveFolderId(null)}
+                className={`px-3 py-1.5 rounded-lg text-xs font-medium border transition-all ${
+                  activeFolderId === null
+                    ? "bg-[#252a3a] text-white border-indigo-500/80"
+                    : "bg-[#14161f] text-slate-400 border-[#242836] hover:text-slate-200"
+                }`}
+              >
+                전체
+              </button>
+
+              {folders.map((folder) => (
+                <div key={folder.id} className="relative group/chip">
+                  <button
+                    type="button"
+                    onClick={() => setActiveFolderId(folder.id)}
+                    className={`pl-3 pr-7 py-1.5 rounded-lg text-xs font-medium border transition-all flex items-center gap-1.5 ${
+                      activeFolderId === folder.id
+                        ? "bg-[#252a3a] text-white border-indigo-500/80"
+                        : "bg-[#14161f] text-slate-400 border-[#242836] hover:text-slate-200"
+                    }`}
+                  >
+                    <Folder className="w-3 h-3 text-slate-500" />
+                    <span>{folder.name}</span>
+                    <span className="text-slate-600">
+                      {documents.filter((d) => d.folderId === folder.id).length}
+                    </span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={(e) => handleDeleteFolder(folder.id, e)}
+                    title="폴더 삭제"
+                    className="absolute right-1.5 top-1/2 -translate-y-1/2 p-0.5 rounded text-slate-600 hover:text-rose-400 opacity-0 group-hover/chip:opacity-100 transition-opacity"
+                  >
+                    <X className="w-3 h-3" />
+                  </button>
+                </div>
+              ))}
+
+              <button
+                type="button"
+                onClick={handleCreateFolder}
+                className="px-3 py-1.5 rounded-lg text-xs font-medium border border-dashed border-[#2b3144] text-slate-500 hover:text-slate-300 hover:border-slate-500 transition-all flex items-center gap-1.5"
+              >
+                <FolderPlus className="w-3 h-3" />
+                <span>새 폴더</span>
+              </button>
             </div>
 
             {/* Document Cards Grid */}
@@ -457,7 +581,7 @@ export default function Home() {
               </div>
 
               {/* Saved Document Cards */}
-              {documents.map((doc) => (
+              {visibleDocuments.map((doc) => (
                 <div
                   key={doc.id}
                   onClick={() => {
@@ -493,21 +617,32 @@ export default function Home() {
                     </div>
 
                     <div className="flex items-center justify-between pt-2 border-t border-[#1c202c] mt-2">
-                      <div className="flex items-center gap-2">
-                        <span className="text-[10px] font-bold uppercase px-1.5 py-0.5 rounded bg-[#1e2333] text-[#7888ab] border border-[#2b3248]">
+                      <div className="flex items-center gap-2 min-w-0">
+                        <span className="text-[10px] font-bold uppercase px-1.5 py-0.5 rounded bg-[#1e2333] text-[#7888ab] border border-[#2b3248] flex-shrink-0">
                           {doc.fileType}
                         </span>
-                        <span className="text-[11px] text-slate-500">
+                        <span className="text-[11px] text-slate-500 flex-shrink-0">
                           {doc.createdAt}
                         </span>
+                        {doc.folderId &&
+                          (() => {
+                            const folder = folders.find((f) => f.id === doc.folderId);
+                            return folder ? (
+                              <span className="text-[10px] text-indigo-300 truncate flex items-center gap-0.5">
+                                <Folder className="w-2.5 h-2.5 flex-shrink-0" />
+                                <span className="truncate">{folder.name}</span>
+                              </span>
+                            ) : null;
+                          })()}
                       </div>
 
                       {/* 3-dots Menu */}
-                      <div className="relative">
+                      <div className="relative flex-shrink-0">
                         <button
                           type="button"
                           onClick={(e) => {
                             e.stopPropagation();
+                            setFolderMenuOpenDocId(null);
                             setMenuOpenDocId(
                               menuOpenDocId === doc.id ? null : doc.id
                             );
@@ -520,8 +655,62 @@ export default function Home() {
                         {menuOpenDocId === doc.id && (
                           <div
                             onClick={(e) => e.stopPropagation()}
-                            className="absolute right-0 bottom-full mb-1 w-28 bg-[#181a24] border border-[#292e3f] rounded-lg shadow-xl py-1 z-30 text-xs"
+                            className="absolute right-0 bottom-full mb-1 w-40 bg-[#181a24] border border-[#292e3f] rounded-lg shadow-xl py-1 z-30 text-xs"
                           >
+                            <div className="relative">
+                              <button
+                                type="button"
+                                onClick={() =>
+                                  setFolderMenuOpenDocId(
+                                    folderMenuOpenDocId === doc.id ? null : doc.id
+                                  )
+                                }
+                                className="w-full text-left px-3 py-1.5 text-slate-300 hover:bg-[#202434] flex items-center justify-between gap-1.5"
+                              >
+                                <span className="flex items-center gap-1.5">
+                                  <Folder className="w-3 h-3" />
+                                  <span>폴더 이동</span>
+                                </span>
+                                <ChevronRight className="w-3 h-3 text-slate-500" />
+                              </button>
+
+                              {folderMenuOpenDocId === doc.id && (
+                                <div className="absolute right-full top-0 mr-1 w-36 bg-[#181a24] border border-[#292e3f] rounded-lg shadow-xl py-1 max-h-48 overflow-y-auto">
+                                  <button
+                                    type="button"
+                                    onClick={() => handleMoveDocToFolder(doc.id, null)}
+                                    className={`w-full text-left px-3 py-1.5 hover:bg-[#202434] ${
+                                      !doc.folderId ? "text-indigo-300" : "text-slate-300"
+                                    }`}
+                                  >
+                                    미분류
+                                  </button>
+                                  {folders.length === 0 ? (
+                                    <div className="px-3 py-1.5 text-slate-600">
+                                      폴더 없음
+                                    </div>
+                                  ) : (
+                                    folders.map((folder) => (
+                                      <button
+                                        key={folder.id}
+                                        type="button"
+                                        onClick={() =>
+                                          handleMoveDocToFolder(doc.id, folder.id)
+                                        }
+                                        className={`w-full text-left px-3 py-1.5 hover:bg-[#202434] truncate ${
+                                          doc.folderId === folder.id
+                                            ? "text-indigo-300"
+                                            : "text-slate-300"
+                                        }`}
+                                      >
+                                        {folder.name}
+                                      </button>
+                                    ))
+                                  )}
+                                </div>
+                              )}
+                            </div>
+
                             <button
                               type="button"
                               onClick={(e) => handleDeleteDoc(doc.id, e)}

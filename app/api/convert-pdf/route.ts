@@ -3,6 +3,7 @@ import { spawn } from "child_process";
 import { promises as fs } from "fs";
 import os from "os";
 import path from "path";
+import { get } from "@vercel/blob";
 
 export const maxDuration = 60;
 
@@ -45,14 +46,16 @@ function runSoffice(bin: string, args: string[]): Promise<void> {
 export async function POST(req: NextRequest) {
   let tmpDir: string | null = null;
   try {
-    const formData = await req.formData();
-    const file = formData.get("file") as File | null;
+    const { fileUrl, fileName } = (await req.json()) as {
+      fileUrl?: string;
+      fileName?: string;
+    };
 
-    if (!file) {
-      return NextResponse.json({ error: "업로드된 파일이 없습니다." }, { status: 400 });
+    if (!fileUrl || !fileName) {
+      return NextResponse.json({ error: "업로드된 파일 정보가 없습니다." }, { status: 400 });
     }
 
-    const ext = (file.name.split(".").pop() || "").toLowerCase();
+    const ext = (fileName.split(".").pop() || "").toLowerCase();
     if (!["pptx", "docx"].includes(ext)) {
       return NextResponse.json(
         { error: "PPTX 또는 DOCX 파일만 PDF로 변환할 수 있습니다." },
@@ -60,9 +63,14 @@ export async function POST(req: NextRequest) {
       );
     }
 
+    const blobResult = await get(fileUrl, { access: "private" });
+    if (!blobResult || !blobResult.stream) {
+      return NextResponse.json({ error: "업로드된 파일을 찾을 수 없습니다." }, { status: 404 });
+    }
+    const buffer = Buffer.from(await new Response(blobResult.stream).arrayBuffer());
+
     tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), "lecture-conv-"));
     const inputPath = path.join(tmpDir, `input.${ext}`);
-    const buffer = Buffer.from(await file.arrayBuffer());
     await fs.writeFile(inputPath, buffer);
 
     const soffice = await findSoffice();

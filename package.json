@@ -10,6 +10,7 @@
   },
   "dependencies": {
     "@google/genai": "latest",
+    "@vercel/blob": "^2.8.0",
     "lucide-react": "^0.453.0",
     "next": "^14.2.15",
     "officeparser": "^7.8.0",
