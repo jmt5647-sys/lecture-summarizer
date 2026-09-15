@@ -4,6 +4,7 @@ import { promises as fs } from "fs";
 import os from "os";
 import path from "path";
 import { get } from "@vercel/blob";
+import { convertWithCloudConvert, isCloudConvertConfigured } from "@/lib/cloudConvert";
 
 export const maxDuration = 60;
 
@@ -69,23 +70,35 @@ export async function POST(req: NextRequest) {
     }
     const buffer = Buffer.from(await new Response(blobResult.stream).arrayBuffer());
 
-    tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), "lecture-conv-"));
-    const inputPath = path.join(tmpDir, `input.${ext}`);
-    await fs.writeFile(inputPath, buffer);
+    let pdfBuffer: Buffer;
+    try {
+      // 1순위: 로컬에 설치된 LibreOffice (무료, 빠름 — 주로 로컬 개발 환경)
+      tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), "lecture-conv-"));
+      const inputPath = path.join(tmpDir, `input.${ext}`);
+      await fs.writeFile(inputPath, buffer);
 
-    const soffice = await findSoffice();
-    await runSoffice(soffice, [
-      "--headless",
-      "--norestore",
-      "--convert-to",
-      "pdf",
-      "--outdir",
-      tmpDir,
-      inputPath,
-    ]);
+      const soffice = await findSoffice();
+      await runSoffice(soffice, [
+        "--headless",
+        "--norestore",
+        "--convert-to",
+        "pdf",
+        "--outdir",
+        tmpDir,
+        inputPath,
+      ]);
 
-    const outputPath = path.join(tmpDir, "input.pdf");
-    const pdfBuffer = await fs.readFile(outputPath);
+      const outputPath = path.join(tmpDir, "input.pdf");
+      pdfBuffer = await fs.readFile(outputPath);
+    } catch (localError) {
+      // 2순위: LibreOffice를 쓸 수 없는 환경(예: Vercel 서버리스)에서는
+      // CloudConvert API로 폴백 (설정되어 있는 경우에만)
+      if (!isCloudConvertConfigured()) {
+        throw localError;
+      }
+      console.warn("LibreOffice 변환 실패, CloudConvert로 폴백:", localError);
+      pdfBuffer = await convertWithCloudConvert(buffer, fileName);
+    }
 
     return new NextResponse(new Uint8Array(pdfBuffer), {
       status: 200,
