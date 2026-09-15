@@ -85,25 +85,34 @@ export default function Home() {
   const [isLoadingBlob, setIsLoadingBlob] = useState<boolean>(false);
   const [targetPage, setTargetPage] = useState<number | null>(null);
 
-  // 텍스트 내의 p.06 또는 (p.06) 패턴을 감지하여 클릭 가능한 모노 배지로 변환
-  // 클릭 시 왼쪽 원본 뷰어가 해당 페이지로 이동한다.
+  // 텍스트 내의 p.06, (p.06) 또는 p.06-08 같은 범위 패턴을 감지하여
+  // 클릭 가능한 모노 배지로 변환한다. 클릭 시 왼쪽 원본 뷰어가 해당 페이지로 이동한다.
   const formatPageCitations = (text: string) => {
-    const parts = text.split(/(\(?p\.\d{1,3}\)?)/gi);
+    const citationPattern = /(\(?p\.\d{1,3}(?:\s*[-~]\s*\d{1,3})?\)?)/gi;
+    const parts = text.split(citationPattern);
     if (parts.length === 1) return text;
 
     return parts.map((part, i) => {
-      const match = part.match(/\(?p\.(\d{1,3})\)?/i);
+      const match = part.match(/^\(?p\.(\d{1,3})(?:\s*[-~]\s*(\d{1,3}))?\)?$/i);
       if (match) {
-        const pageNum = parseInt(match[1], 10);
+        const startPage = parseInt(match[1], 10);
+        const endPage = match[2] ? parseInt(match[2], 10) : null;
+        const label = endPage
+          ? `p.${String(startPage).padStart(2, "0")}-${String(endPage).padStart(2, "0")}`
+          : `p.${String(startPage).padStart(2, "0")}`;
         return (
           <button
             key={i}
             type="button"
-            onClick={() => setTargetPage(pageNum)}
-            className="inline-flex items-center text-[10px] font-mono font-semibold px-1.5 py-0.5 rounded text-indigo-300 bg-[#1e2333] border border-[#2d344d] ml-1 align-baseline hover:bg-[#2a3150] hover:border-indigo-500/70 hover:text-indigo-200 transition-colors cursor-pointer"
-            title={`원문 ${pageNum}페이지로 이동`}
+            onClick={() => setTargetPage(startPage)}
+            className="inline-flex items-center text-[10px] font-mono font-semibold px-1.5 py-0.5 rounded text-indigo-300 bg-[#1e2333] border border-[#2d344d] mx-0.5 align-baseline hover:bg-[#2a3150] hover:border-indigo-500/70 hover:text-indigo-200 transition-colors cursor-pointer whitespace-nowrap"
+            title={
+              endPage
+                ? `원문 ${startPage}~${endPage}페이지로 이동`
+                : `원문 ${startPage}페이지로 이동`
+            }
           >
-            p.{String(pageNum).padStart(2, "0")}
+            {label}
           </button>
         );
       }
