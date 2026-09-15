@@ -282,6 +282,7 @@ export default function Home() {
       const blob = await upload(uploadFile.name, uploadFile, {
         access: "private",
         handleUploadUrl: "/api/blob-upload",
+        multipart: true,
       });
 
       setUploadStep("강의 슬라이드 및 텍스트 분석 중...");

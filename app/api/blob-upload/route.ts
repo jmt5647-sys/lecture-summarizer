@@ -18,7 +18,7 @@ export async function POST(request: Request): Promise<NextResponse> {
           "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
         ],
         addRandomSuffix: true,
-        maximumSizeInBytes: 200 * 1024 * 1024, // 200MB
+        maximumSizeInBytes: 2 * 1024 * 1024 * 1024, // 2GB
       }),
       onUploadCompleted: async () => {
         // 업로드 완료 후 별도로 서버에 기록할 상태는 없음 (클라이언트가 이어서 처리)
